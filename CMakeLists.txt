@@ -14,4 +14,5 @@ file(GLOB SOURCES "src/*.cpp")
 add_executable(minsh ${SOURCES})
 
 # Output directory
+file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 set_target_properties(minsh PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
