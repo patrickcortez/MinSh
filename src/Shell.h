@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include "Multiplex.hpp"
 
 class Shell {
 public:
@@ -35,8 +36,8 @@ private:
     // Logging helper
     void log(const std::string& text);
     void logLn(const std::string& text = "");
-    std::ostringstream sessionHistory;
-    std::string currentSessionName;
+    
+    Multiplexer multiplexer;
 };
 
 #endif // SHELL_H

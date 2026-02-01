@@ -1,6 +1,5 @@
-// Compile: g++ -Wall -std=c++17 src/main.cpp src/Shell.cpp src/Sessions.cpp -o bin/minsh
+// Compile: cmake ...
 // Run: bin/minsh
-// Execute: bin/minsh
 
 #include "Shell.h"
 #include "Utils.h"
@@ -17,60 +16,62 @@ namespace fs = std::filesystem;
 Shell::Shell(const std::string& exePath) : isRunning(true) {
     SessionManager::init(exePath);
     SessionManager::ensureSessionDirectory();
-    
-    // Start at home directory
+    multiplexer.init();
+
+    // Start at home directory for the initial pane
     const char* home = getenv("USERPROFILE"); // Windows
     if (!home) home = getenv("HOME"); // Linux/Unix fallback
     if (home) {
         try {
             fs::current_path(home);
+            multiplexer.getActivePane().cwd = home;
         } catch (const fs::filesystem_error&) {
-            // Fallback to current dir if home fails
+            // Fallback
         }
+    } else {
+        multiplexer.getActivePane().cwd = fs::current_path().string();
     }
 }
 
 void Shell::log(const std::string& text) {
-    std::cout << text;
-    sessionHistory << text;
+    multiplexer.logToActive(text);
 }
 
 void Shell::logLn(const std::string& text) {
-    std::cout << text << std::endl;
-    sessionHistory << text << "\n";
+    multiplexer.logToActive(text);
 }
 
 void Shell::run() {
+    // Initial welcome
     logLn("Welcome to Minsh!");
     logLn("- Type 'help' to view all commands");
 
     std::string input;
     while (isRunning) {
-        std::string cwd;
+        // Sync process CWD with active pane before prompt/execution
         try {
-            cwd = fs::current_path().string();
-        } catch (const std::exception& e) {
-            cwd = "unknown";
-        }
-        
-        std::stringstream promptSs;
-        promptSs << Color::CYAN << "MinSh@" << Color::RESET 
-                 << Color::LIGHT_GREEN << cwd << Color::RESET << ": ";
-        
-        log(promptSs.str());
-        
+            fs::current_path(multiplexer.getActivePane().cwd);
+        } catch (...) {}
+
+        multiplexer.render();
+
         if (!std::getline(std::cin, input)) {
-            std::cout << std::endl;
             break;
         }
 
-        sessionHistory << input << "\n";
+        // Echo input to history so it stays visible
+        multiplexer.logToActive("> " + input);
 
         if (input.empty()) {
             continue;
         }
 
         parseAndExecute(input);
+        
+        // Update CWD in pane after execution (in case of cd/goto)
+        try {
+            multiplexer.getActivePane().cwd = fs::current_path().string();
+        } catch (...) {}
     }
 }
 
@@ -131,12 +132,16 @@ void Shell::cmdHelp() {
     logLn("    update                   - updates loaded session");
     logLn("    remove <name>            - removes a session");
     logLn("    list                     - lists all sessions");
+    logLn("    add                      - splits screen with new session");
+    logLn("    switch <number>          - switches focus to session N");
+    logLn("    detach                   - moves active session to background");
+    logLn("    retach <index>           - brings background session to foreground");
     logLn("  exit                       - exits the shell");
 }
 
 void Shell::cmdSay(const std::vector<std::string>& args) {
     if (args.size() < 2) {
-        logLn();
+        logLn("");
         return;
     }
     std::stringstream ss;
@@ -264,7 +269,7 @@ void Shell::cmdList(const std::vector<std::string>& args) {
 
 void Shell::cmdSesh(const std::vector<std::string>& args) {
     if (args.size() < 2) {
-        logLn("Minsh: sesh: invalid arguments. Use save, load, or list.");
+        logLn("Minsh: sesh: invalid arguments. Use save, load, list, add, switch, detach, retach.");
         return;
     }
 
@@ -276,9 +281,14 @@ void Shell::cmdSesh(const std::vector<std::string>& args) {
             return;
         }
         std::string name = args[2];
-        std::string cwd = fs::current_path().string();
-        if (SessionManager::saveSession(name, sessionHistory.str(), cwd)) {
-            currentSessionName = name;
+        // Join all history lines
+        std::ostringstream oss;
+        for (const auto& line : multiplexer.getActivePane().history) {
+            oss << line << "\n";
+        }
+        std::string cwd = multiplexer.getActivePane().cwd;
+        
+        if (SessionManager::saveSession(name, oss.str(), cwd)) {
             logLn("Session '" + name + "' saved.");
         } else {
             logLn("Minsh: sesh save: failed to save session");
@@ -294,61 +304,69 @@ void Shell::cmdSesh(const std::vector<std::string>& args) {
         if (data.content.empty() && data.cwd.empty()) {
             logLn("Minsh: sesh load: session not found or empty");
         } else {
-            currentSessionName = name;
+            // Replace current pane history/cwd
+            Pane& p = multiplexer.getActivePane();
+            p.cwd = data.cwd;
+            p.history.clear();
             
-            // Restore CWD
-            if (!data.cwd.empty()) {
-                try {
-                    fs::current_path(data.cwd);
-                } catch (const fs::filesystem_error& e) {
-                    // Just log error but continue loading history
-                    sessionHistory << "Minsh: warning: could not restore directory " << data.cwd << "\n";
-                }
+            // Split content into lines
+            std::istringstream stream(data.content);
+            std::string line;
+            while (std::getline(stream, line)) {
+                p.history.push_back(line);
             }
-
-            std::cout << "\033[2J\033[H";
-            std::cout << data.content;
             
-            sessionHistory.str("");
-            sessionHistory << data.content;
+            // Try to sync CWD immediately
+            try {
+                fs::current_path(p.cwd);
+            } catch (...) {}
         }
 
-    } else if (subcmd == "update") {
-        if (currentSessionName.empty()) {
-            logLn("Minsh: sesh update: no session loaded");
-            return;
-        }
-        std::string cwd = fs::current_path().string();
-        if (SessionManager::saveSession(currentSessionName, sessionHistory.str(), cwd)) {
-            logLn("Session '" + currentSessionName + "' updated.");
-        } else {
-            logLn("Minsh: sesh update: failed to update session");
-        }
-
-    } else if (subcmd == "remove") {
+    } else if (subcmd == "add") {
+        multiplexer.addPane();
+    } else if (subcmd == "switch") {
         if (args.size() < 3) {
-            logLn("Minsh: sesh remove: missing session name");
+            logLn("Minsh: sesh switch: missing number");
             return;
         }
-        std::string name = args[2];
-        if (SessionManager::removeSession(name)) {
-            if (currentSessionName == name) {
-                currentSessionName = "";
-            }
-            logLn("Session '" + name + "' removed.");
-        } else {
-            logLn("Minsh: " + name + ": session not found");
+        try {
+            int num = std::stoi(args[2]);
+            multiplexer.switchPane(num);
+        } catch (...) {
+            logLn("Minsh: sesh switch: invalid number");
         }
-
+    } else if (subcmd == "detach") {
+        multiplexer.detachActivePane();
+    } else if (subcmd == "retach") {
+        if (args.size() < 3) {
+            logLn("Minsh: sesh retach: missing index");
+            return;
+        }
+        try {
+            int num = std::stoi(args[2]);
+            multiplexer.retachPane(num);
+        } catch (...) {
+            logLn("Minsh: sesh retach: invalid number");
+        }
     } else if (subcmd == "list") {
+        // List on disk
         std::vector<std::string> sessions = SessionManager::listSessions();
-        if (sessions.empty()) {
-            logLn("No sessions found.");
-        } else {
-            logLn("Available sessions:");
+        if (!sessions.empty()) {
+            logLn("Saved Sessions:");
             for (const auto& s : sessions) {
                 logLn("  " + s);
             }
+        }
+        // List background
+        auto& bg = multiplexer.getBackgroundPanes();
+        if (!bg.empty()) {
+            logLn("Background Panes:");
+            for (size_t i = 0; i < bg.size(); ++i) {
+                logLn("  [" + std::to_string(i) + "] CWD: " + bg[i].cwd);
+            }
+        }
+        if (sessions.empty() && bg.empty()) {
+            logLn("No sessions found.");
         }
     } else {
         logLn("Minsh: sesh: unknown subcommand '" + subcmd + "'");
