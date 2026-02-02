@@ -187,7 +187,11 @@ void Shell::run() {
                             }
                         } else if (ir[i].EventType == MOUSE_EVENT) {
                              MOUSE_EVENT_RECORD& mer = ir[i].Event.MouseEvent;
-                             if (mer.dwButtonState == FROM_LEFT_1ST_BUTTON_PRESSED) {
+                             if (mer.dwEventFlags & MOUSE_WHEELED) {
+                                  // High word is delta
+                                  short delta = (short)(mer.dwButtonState >> 16);
+                                  multiplexer.handleMouseWheel(mer.dwMousePosition.X, mer.dwMousePosition.Y, delta);
+                             } else if (mer.dwButtonState == FROM_LEFT_1ST_BUTTON_PRESSED) {
                                  multiplexer.handleMouse(mer.dwMousePosition.X, mer.dwMousePosition.Y, 1);
                              }
                         }

@@ -3,9 +3,10 @@ A custom lightweight Hybrid Terminal Multiplexer and Workspace Manager made in C
 
 ## Features
 - MultiPlexing and MultiPaning
-- Independent Sessions per Pane
+- Independent Sessions per Pane and usage of mouse wheel to scroll individual panes
 - Session Management and Pane management
 - Background Sessions
+- history tracking for each session
 - Simple Core Utility Commands
 
 ## Commands

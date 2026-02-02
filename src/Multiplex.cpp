@@ -371,6 +371,29 @@ void Multiplexer::handleMouse(int x, int y, int button) {
     }
 }
 
+void Multiplexer::handleMouseWheel(int x, int y, int delta) {
+    LayoutNode* node = root.get();
+    while (node && node->type != SPLIT_NONE) {
+        Rect rA = node->childA->cachedRect;
+        if (x >= rA.x && x < rA.x + rA.w && y >= rA.y && y < rA.y + rA.h) {
+            node = node->childA.get();
+        } else {
+            node = node->childB.get();
+        }
+    }
+    
+    if (node && node->pane) {
+        int lines = 0;
+        if (delta != 0) {
+             // Standard scroll 3 lines per notch
+             int notches = delta / 120;
+             if (notches == 0) notches = (delta > 0) ? 1 : -1;
+             lines = notches * 3;
+        }
+        node->pane->scroll(lines);
+    }
+}
+
 void Multiplexer::flattenPanes(LayoutNode* node, std::vector<Pane*>& out) {
     if (!node) return;
     if (node->type == SPLIT_NONE) {

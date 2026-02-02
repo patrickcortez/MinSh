@@ -53,6 +53,7 @@ public:
     void updateSize();
     
     void handleMouse(int x, int y, int button);
+    void handleMouseWheel(int x, int y, int delta);
 
 private:
     std::unique_ptr<LayoutNode> root;
