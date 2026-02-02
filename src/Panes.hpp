@@ -43,6 +43,7 @@ public:
 
 class Pane {
 public:
+    int id = 0;
     Pane(int w, int h);
     ~Pane();
     
@@ -52,16 +53,30 @@ public:
     int scrollOffset; 
     std::string cwd;
     std::string currentInput; // Added for line editing
+    int inputCursor = 0; // Cursor position within currentInput
+    
+    // Selection State
+    bool hasSelection = false;
+    int selectionStart = -1;
+    int selectionEnd = -1;
+
     bool waitingForProcess = false; // Added for prompt management
     std::chrono::steady_clock::time_point detachTime; // Track when detached
     
     void write(const std::string& text);
     void resize(int w, int h);
+    void repaint();
     
     void put_char(char c);
     void new_line();
     
-    void backspace();
+    // Manual Editing Methods
+    void insertChar(char c);
+    void deleteChar();
+    void deleteCharForward();
+    void moveCursor(int delta);
+    
+    void backspace(); // Low level display backspace
     
     void scroll(int delta);
     void resetScroll();

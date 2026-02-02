@@ -12,6 +12,7 @@ Multiplexer::Multiplexer() {
     
     root = std::make_unique<LayoutNode>();
     root->pane = std::make_unique<Pane>(cols, rows);
+    root->pane->id = nextPaneId++;
     activeNode = root.get();
     
     root->pane->write("Welcome to Minsh!\n- Type 'help' to view all commands\n\n");
@@ -113,13 +114,14 @@ void Multiplexer::addPane() {
     updateSize();
     debugLog("addPane: Creating new pane");
     activeNode->childB->pane = std::make_unique<Pane>(cols, rows);
+    activeNode->childB->pane->id = nextPaneId++;
     
     activeNode = activeNode->childB.get();
     
     std::string folder = fs::path(activeNode->pane->cwd).filename().string();
     if (folder.empty()) folder = activeNode->pane->cwd;
     
-    std::string prompt = "\033[36mMinSh[" + std::to_string(getActivePaneIndex() + 1) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
+    std::string prompt = "\033[36mMinSh[" + std::to_string(activeNode->pane->id) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
     activeNode->pane->write(prompt);
     
     debugLog("addPane: recalculateLayout");

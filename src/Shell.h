@@ -36,6 +36,7 @@ private:
     void cmdRemove(const std::vector<std::string>& args);
     void cmdList(const std::vector<std::string>& args);
     void cmdSesh(const std::vector<std::string>& args);
+    void cmdRead(const std::vector<std::string>& args);
 
     // Logging helper
     void log(const std::string& text);

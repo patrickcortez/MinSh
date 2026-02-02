@@ -57,6 +57,7 @@ public:
 private:
     std::unique_ptr<LayoutNode> root;
     LayoutNode* activeNode;
+    int nextPaneId = 1;
     
     std::vector<std::unique_ptr<Pane>> backgroundPanes;
     

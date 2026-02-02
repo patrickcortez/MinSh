@@ -22,8 +22,20 @@ public:
     // Future input support
     void writeInput(const std::string& input);
 
+    // History
+    void initHistory(const std::string& exePath);
+    void saveHistory();
+    void addHistory(const std::string& cmd);
+    std::string historyUp(const std::string& currentContext);
+    std::string historyDown();
+    void resetHistoryIndex();
+
 private:
     std::string currentDirectory;
+    std::string historyFilePath;
+    std::vector<std::string> history;
+    int historyIndex = -1;
+    std::string tempHistoryInput; // Preserve current input when moving up
     
     HANDLE hProcess;
     HANDLE hThread;

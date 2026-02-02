@@ -73,6 +73,29 @@ void Pane::resize(int w, int h) {
     if (cy >= h) cy = h - 1;
 }
 
+void Pane::repaint() {
+    grid = std::make_unique<Grid>(grid->sx, grid->sy);
+    cx = 0;
+    cy = 0;
+    
+    std::string folder = fs::path(cwd).filename().string();
+    if (folder.empty()) folder = cwd;
+    
+    // Prompt reconstruction
+    std::string prompt = "\n\033[36mMinSh[" + std::to_string(id) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
+    write(prompt);
+    write(currentInput);
+    
+    // Restore visual cursor to inputCursor
+    // After write(currentInput), cx is at end.
+    // We need to move back (length - inputCursor)
+    int dist = currentInput.length() - inputCursor;
+    for(int i=0; i<dist; ++i) {
+        if (cx > 0) cx--;
+        else if (cy > 0) { cy--; cx = grid->sx - 1; }
+    }
+}
+
 void Pane::write(const std::string& text) {
     for (char c : text) {
         put_char(c);
@@ -214,12 +237,90 @@ void Pane::backspace() {
 void Pane::scroll(int delta) {
     scrollOffset += delta;
     if (scrollOffset < 0) scrollOffset = 0;
-    // Limit max scroll to history size? 
-    // int maxScroll = std::max(0, (int)grid->lines.size() - sy);
-    // if (scrollOffset > maxScroll) scrollOffset = maxScroll;
-    // Keeping it simple for now, render handles bounds
 }
 
 void Pane::resetScroll() {
     scrollOffset = 0;
+}
+
+// ---- Manual Editing Implementations ----
+
+void Pane::insertChar(char c) {
+    if (c < 32) return;
+    
+    if (inputCursor < 0) inputCursor = 0;
+    if (inputCursor > (int)currentInput.length()) inputCursor = currentInput.length();
+    
+    currentInput.insert(inputCursor, 1, c);
+    inputCursor++;
+    
+    put_char(c);
+    
+    if (inputCursor < (int)currentInput.length()) {
+        std::string tail = currentInput.substr(inputCursor);
+        for(char tc : tail) put_char(tc);
+        
+        for(size_t i=0; i<tail.length(); ++i) {
+            if (cx > 0) cx--;
+            else if (cy > 0) { cy--; cx = grid->sx - 1; }
+        }
+    }
+}
+
+void Pane::deleteChar() {
+    if (inputCursor > 0 && !currentInput.empty()) {
+        inputCursor--;
+        currentInput.erase(inputCursor, 1);
+        backspace();
+        
+        if (inputCursor < (int)currentInput.length()) {
+             std::string tail = currentInput.substr(inputCursor);
+             for(char tc : tail) put_char(tc);
+             put_char(' ');
+             for(size_t i=0; i<tail.length() + 1; ++i) {
+                if (cx > 0) cx--;
+                else if (cy > 0) { cy--; cx = grid->sx - 1; }
+             }
+        }
+    }
+}
+
+void Pane::deleteCharForward() {
+    if (inputCursor < (int)currentInput.length()) {
+        currentInput.erase(inputCursor, 1);
+        
+        std::string tail = currentInput.substr(inputCursor);
+        for(char tc : tail) put_char(tc);
+        put_char(' ');
+        
+        for(size_t i=0; i<tail.length() + 1; ++i) {
+             if (cx > 0) cx--;
+             else if (cy > 0) { cy--; cx = grid->sx - 1; }
+        }
+    }
+}
+
+void Pane::moveCursor(int delta) {
+    int newPos = inputCursor + delta;
+    if (newPos < 0) newPos = 0;
+    if (newPos > (int)currentInput.length()) newPos = currentInput.length();
+    
+    int move = newPos - inputCursor;
+    inputCursor = newPos;
+    
+    if (move > 0) {
+        for(int i=0; i<move; ++i) {
+             cx++;
+             if (cx >= grid->sx) { 
+                 cx=0; 
+                 cy++; 
+                 if (cy >= grid->sy) cy = grid->sy-1;
+             }
+        }
+    } else if (move < 0) {
+         for(int i=0; i<-move; ++i) {
+             if (cx > 0) cx--;
+             else if (cy > 0) { cy--; cx = grid->sx - 1; }
+         }
+    }
 }

@@ -1,13 +1,18 @@
 #include "ShellSession.hpp"
 #include <iostream>
+#include <iostream>
 #include <vector>
+#include <fstream>
+#include <filesystem>
+#include "Utils.h" 
+
+namespace fs = std::filesystem;
 
 ShellSession::ShellSession() 
     : hProcess(NULL), hThread(NULL), 
       hChildOutRead(NULL), hChildOutWrite(NULL), 
       hChildErrWrite(NULL), hChildInRead(NULL), hChildInWrite(NULL) 
 {
-    // Default CWD to USERPROFILE or Current Directory
     char buffer[MAX_PATH];
     if (GetCurrentDirectoryA(MAX_PATH, buffer)) {
         currentDirectory = std::string(buffer);
@@ -17,6 +22,30 @@ ShellSession::ShellSession()
 ShellSession::~ShellSession() {
     cleanupProcess();
     closePipes();
+    saveHistory(); // Save on exit
+}
+
+void ShellSession::initHistory(const std::string& exePath) {
+    fs::path binPath(exePath);
+    historyFilePath = (binPath.parent_path() / "history.min").string();
+    
+    std::ifstream infile(historyFilePath);
+    if (infile) {
+        std::string line;
+        while (std::getline(infile, line)) {
+            if (!line.empty()) history.push_back(line);
+        }
+    }
+}
+
+void ShellSession::saveHistory() {
+    if (historyFilePath.empty()) return;
+    std::ofstream outfile(historyFilePath);
+    if (outfile) {
+        for (const auto& cmd : history) {
+            outfile << cmd << "\n";
+        }
+    }
 }
 
 void ShellSession::setCwd(const std::string& path) {
@@ -70,12 +99,11 @@ void ShellSession::cleanupProcess() {
 }
 
 bool ShellSession::execute(const std::string& cmd) {
-    if (isBusy()) return false; // Already running logic? Or queue? For now, block/ignore.
+    if (isBusy()) return false;
 
     createPipes();
 
     std::string cmdLine = cmd; 
-    // Note: In real implementation, might need "cmd /c" or similar if it's a shell command vs executable
     
     PROCESS_INFORMATION piProcInfo;
     STARTUPINFOA siStartInfo;
@@ -127,10 +155,6 @@ bool ShellSession::isBusy() {
         if (dwExitCode == STILL_ACTIVE) return true;
     }
     
-    // If we're here, it finished.
-    // But we might still have data in pipe!
-    // We should only say "not busy" if pipe is empty AND process finished.
-    // However, typical pattern: poll until empty, then check process.
     
     cleanupProcess();
     return false;
@@ -160,4 +184,46 @@ void ShellSession::writeInput(const std::string& input) {
     
     DWORD dwWritten;
     WriteFile(hChildInWrite, input.data(), input.size(), &dwWritten, NULL);
+}
+
+void ShellSession::addHistory(const std::string& cmd) {
+    if (cmd.empty()) return;
+    if (!history.empty() && history.back() == cmd) return;
+    history.push_back(cmd);
+    historyIndex = -1;
+    saveHistory();
+}
+
+std::string ShellSession::historyUp(const std::string& currentContext) {
+    if (history.empty()) return "";
+    
+    if (historyIndex == -1) {
+        historyIndex = history.size() - 1;
+        tempHistoryInput = currentContext;
+    } else if (historyIndex > 0) {
+        historyIndex--;
+    }
+    
+    if (historyIndex >= 0 && historyIndex < (int)history.size()) {
+        return history[historyIndex];
+    }
+    return "";
+}
+
+std::string ShellSession::historyDown() {
+    if (historyIndex == -1) return ""; // Already at bottom
+    
+    if (historyIndex < (int)history.size() - 1) {
+        historyIndex++;
+        return history[historyIndex];
+    } else {
+        // Restore temp
+        historyIndex = -1;
+        return tempHistoryInput;
+    }
+}
+
+void ShellSession::resetHistoryIndex() {
+    historyIndex = -1;
+    tempHistoryInput.clear();
 }

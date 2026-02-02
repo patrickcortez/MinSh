@@ -10,6 +10,8 @@
 #include <sstream>
 #include <filesystem>
 #include <fstream>
+#include "Signal.hpp"
+#include "Interrupts.hpp"
 
 namespace fs = std::filesystem;
 
@@ -17,6 +19,9 @@ Shell::Shell(const std::string& exePath) : isRunning(true) {
     SessionManager::init(exePath);
     SessionManager::ensureSessionDirectory();
     multiplexer.init();
+    
+    // Init main pane history
+    multiplexer.getActivePane().session->initHistory(exePath);
 
     if (!fs::exists("cmds")) {
         fs::create_directory("cmds");
@@ -54,6 +59,7 @@ void Shell::log(const std::string& text) {
 
 void Shell::run() {
     multiplexer.init(); 
+    Signal::init();
 
     HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
     DWORD prevMode;
@@ -79,25 +85,19 @@ void Shell::run() {
                          std::string folder = fs::path(pane->session->getCwd()).filename().string();
                          if (folder.empty()) folder = pane->session->getCwd();
                          
-                         // Find index - slow but necessary for prompt accuracy
-                         // Since we are iterating panes, we don't know the "index" in terms of "ActivePaneIndex" logic unless we search.
-                         // But usually index is only for Active pane? No, MinSh[N].
-                         // Let's just use "MinSh" for background completion or try to find it.
-                         // For simplicity, reusing ActivePaneIndex only works if we are painting active pane.
-                         // But here we are painting 'pane'.
-                         // Let's just say "MinSh" or find index. 
-                         // To find index:
-                         int idx = 0;
-                         auto all = multiplexer.getAllPanes();
-                         for(size_t i=0; i<all.size(); ++i) { if(all[i] == pane) { idx = i+1; break; } }
                          
-                         std::string prompt = "\n\033[36mMinSh[" + std::to_string(idx) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
+                         // Print Prompt
+                         std::string prompt = "\n\033[36mMinSh[" + std::to_string(pane->id) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
                          pane->write(prompt);
+                         
+                         // Reset Input State on new prompt
+                         pane->currentInput.clear();
+                         pane->inputCursor = 0;
                     }
                 }
             }
 
-            // 2. Sync CWD for OS calls (optional but good for consistency)
+            // 2. Sync CWD
             try {
                 fs::current_path(multiplexer.getActivePane().session->getCwd());
             } catch (...) {}
@@ -114,52 +114,75 @@ void Shell::run() {
                 DWORD nRead;
                 if (ReadConsoleInput(hIn, ir, 128, &nRead) && nRead > 0) {
                     for (DWORD i = 0; i < nRead; ++i) {
-                        if (ir[i].EventType == KEY_EVENT && ir[i].Event.KeyEvent.bKeyDown) {
-                            KEY_EVENT_RECORD& ker = ir[i].Event.KeyEvent;
-                            char c = ker.uChar.AsciiChar;
+                        if (ir[i].EventType == KEY_EVENT) {
                             Pane& p = multiplexer.getActivePane();
+                            bool bKeyDown = ir[i].Event.KeyEvent.bKeyDown;
+                            WORD vk = ir[i].Event.KeyEvent.wVirtualKeyCode;
+                            char c = ir[i].Event.KeyEvent.uChar.AsciiChar;
+                            DWORD dwCtrl = ir[i].Event.KeyEvent.dwControlKeyState;
                             
+                            bool ctrl = (dwCtrl & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+                            bool shift = (dwCtrl & SHIFT_PRESSED) != 0;
+                            
+                            // Define Prompt Helper
+                            auto printPrompt = [&](Pane& p) {
+                                std::string folder = fs::path(p.session->getCwd()).filename().string();
+                                if (folder.empty()) folder = p.session->getCwd();
+                                std::string prompt = "\n\033[36mMinSh[" + std::to_string(p.id) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
+                                p.write(prompt);
+                                p.currentInput.clear();
+                                p.inputCursor = 0;
+                            };
+
+                            if (bKeyDown && ctrl && shift && vk == 'C') {
+                                // Global Copy
+                                Input::handleClipboardCopy(p);
+                                continue; 
+                            }
+
                             if (p.session && p.session->isBusy()) {
-                                // Forward to child process
-                                if (c != 0) {
-                                    std::string s(1, c);
-                                    p.session->writeInput(s);
-                                    p.write(s); // Echo locally? Usually shells echo.
+                                // Busy State
+                                if (bKeyDown && ctrl && !shift && vk == 'C') {
+                                    // SIGINT (CTRL+C)
+                                    GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+                                    // p.write("^C"); // Optional visual
+                                } else if (bKeyDown) {
+                                    // Forward chars
+                                    if (c != 0) {
+                                        std::string s(1, c);
+                                        p.session->writeInput(s);
+                                        p.write(s); 
+                                    }
                                 }
                             } else {
-                                // Shell Line Editing
-                                if (c == '\r') {
-                                    p.write("\n");
-                                    std::string cmd = p.currentInput;
-                                    p.currentInput.clear();
+                                // Shell Idle State
+                                if (bKeyDown && ctrl && !shift && vk == 'C') {
+                                     // Cancel Input
+                                     p.write("^C");
+                                     printPrompt(p);
+                                } else {
+                                    // Line Editing
+                                    Interrupts::processKey(p, ir[i].Event.KeyEvent);
                                     
-                                    if (!cmd.empty()) {
-                                        parseAndExecute(cmd);
-                                    } else {
-                                        // Empty command, print prompt
-                                        std::string folder = fs::path(p.session->getCwd()).filename().string();
-                                        if (folder.empty()) folder = p.session->getCwd();
-                                        std::string prompt = "\033[36mMinSh[" + std::to_string(multiplexer.getActivePaneIndex() + 1) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
-                                        p.write(prompt);
+                                    // Check Enter
+                                    if (bKeyDown && c == '\r') {
+                                        p.write("\n");
+                                        std::string cmd = p.currentInput;
+                                        p.currentInput.clear();
+                                        p.inputCursor = 0;
+                                        
+                                        if (!cmd.empty()) {
+                                            p.session->addHistory(cmd);
+                                            p.session->resetHistoryIndex();
+                                            parseAndExecute(cmd);
+                                        } else {
+                                            printPrompt(p);
+                                        }
+                                        
+                                        if (!p.waitingForProcess && !cmd.empty()) {
+                                             printPrompt(p);
+                                        }
                                     }
-                                    
-                                    // If sync command (not waiting), print prompt again
-                                    if (!p.waitingForProcess && !cmd.empty()) {
-                                         std::string folder = fs::path(p.session->getCwd()).filename().string();
-                                         if (folder.empty()) folder = p.session->getCwd();
-                                         std::string prompt = "\n\033[36mMinSh[" + std::to_string(multiplexer.getActivePaneIndex() + 1) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
-                                         p.write(prompt);
-                                    }
-                                } 
-                                else if (c == '\b') { 
-                                    if (!p.currentInput.empty()) {
-                                        p.currentInput.pop_back();
-                                        p.backspace();
-                                    }
-                                }
-                                else if (c >= 32) { 
-                                    p.currentInput += c;
-                                    p.write(std::string(1, c));
                                 }
                             }
                         } else if (ir[i].EventType == MOUSE_EVENT) {
@@ -223,6 +246,8 @@ void Shell::parseAndExecute(const std::string& input) {
             cmdList(args);
         } else if (command == "sesh") {
             cmdSesh(args);
+        } else if (command == "read") {
+            cmdRead(args);
         } else {
             executeExternal(command, args);
         }
@@ -289,12 +314,16 @@ void Shell::cmdHelp() {
     logLn("  make [-f/-d] <name>        - creates a file or directory");
     logLn("  remove [-f/-d] <name>      - removes a file or directory");
     logLn("  list [-all/-hidden] <path> - lists files and directories");
+    logLn("  read <file> [flags]        - reads file content");
+    logLn("    -h(\"word\")              - highlights word in red");
+    logLn("    -f(n)                    - reads first n lines");
+    logLn("    -l(n)                    - reads last n lines");
     logLn("  sesh <subcommand>          - session management:");
     logLn("    save <name>              - saves current session");
     logLn("    load <name>              - loads a session");
-    logLn("    update                   - updates loaded session");
+    logLn("    update <name>            - updates saved session");
     logLn("    remove <name>            - removes a session");
-    logLn("    list                     - lists all sessions");
+    logLn("    list [-b]                - lists sessions (-b for background only)");
     logLn("    add                      - splits screen with new session");
     logLn("    switch <number>          - switches focus to session N");
     logLn("    detach                   - moves active session to background");
@@ -610,5 +639,102 @@ void Shell::cmdSesh(const std::vector<std::string>& args) {
         }
     } else {
         logError("Minsh: sesh: unknown subcommand '" + subcmd + "'");
+    }
+}
+
+void Shell::cmdRead(const std::vector<std::string>& args) {
+    if (args.size() < 2) {
+        logError("Minsh: read: missing file operand");
+        return;
+    }
+
+    std::string filename;
+    std::string highlightWord;
+    int headCount = -1;
+    int tailCount = -1;
+
+    // Parse Args
+    for (size_t i = 1; i < args.size(); ++i) {
+        std::string arg = args[i];
+        if (arg.rfind("-h(", 0) == 0 && arg.back() == ')') {
+            // Highlight: -h("word") or -h(word)
+            std::string val = arg.substr(3, arg.length() - 4);
+            // Strip quotes if present
+            if (val.size() >= 2 && ((val.front() == '"' && val.back() == '"') || (val.front() == '\'' && val.back() == '\''))) {
+                val = val.substr(1, val.length() - 2);
+            }
+            highlightWord = val;
+        } else if (arg.rfind("-l(", 0) == 0 && arg.back() == ')') {
+            // Tail: -l(10)
+            try {
+                tailCount = std::stoi(arg.substr(3, arg.length() - 4));
+            } catch (...) { logError("Minsh: read: invalid tail count"); return; }
+        } else if (arg.rfind("-f(", 0) == 0 && arg.back() == ')') {
+             // Head: -f(10)
+            try {
+                headCount = std::stoi(arg.substr(3, arg.length() - 4));
+            } catch (...) { logError("Minsh: read: invalid head count"); return; }
+        } else {
+            filename = arg;
+        }
+    }
+    
+    if (filename.empty()) {
+        logError("Minsh: read: missing filename");
+        return; 
+    }
+    
+    if (!fs::exists(filename)) {
+        logError("Minsh: read: " + filename + ": no such file or directory");
+        return;
+    }
+    
+    std::ifstream file(filename);
+    if (!file) {
+        logError("Minsh: read: permission denied");
+        return;
+    }
+    
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(file, line)) {
+        lines.push_back(line);
+    }
+    
+    // Apply Head (-f)
+    if (headCount != -1) {
+        if (headCount < (int)lines.size()) {
+            lines.resize(headCount);
+        }
+    }
+    
+    // Apply Tail (-l)
+    if (tailCount != -1) {
+        if (tailCount < (int)lines.size()) {
+             std::vector<std::string> newLines;
+             for (size_t i = lines.size() - tailCount; i < lines.size(); ++i) {
+                 newLines.push_back(lines[i]);
+             }
+             lines = newLines;
+        }
+    }
+    
+    // Output with Highlight
+    for (const auto& l : lines) {
+        if (!highlightWord.empty()) {
+            // Find and replace all occurrences
+            std::string printLine = "";
+            size_t pos = 0;
+            size_t found;
+            while ((found = l.find(highlightWord, pos)) != std::string::npos) {
+                printLine += l.substr(pos, found - pos);
+                printLine += "\033[31m" + highlightWord + "\033[0m";
+                pos = found + highlightWord.length();
+            }
+            printLine += l.substr(pos);
+            logLn(printLine);
+        } else {
+            logLn(l);
+        }
     }
 }
