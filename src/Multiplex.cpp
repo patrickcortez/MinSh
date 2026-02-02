@@ -127,7 +127,7 @@ void Multiplexer::addPane() {
     debugLog("addPane: Done");
 }
 
-void Multiplexer::switchPane(int direction) {
+bool Multiplexer::switchToPane(int index) {
     std::vector<LayoutNode*> nodes;
     auto traverse = [&](auto&& self, LayoutNode* n) -> void {
         if (!n) return;
@@ -139,21 +139,14 @@ void Multiplexer::switchPane(int direction) {
     };
     traverse(traverse, root.get());
     
-    if (nodes.empty()) return;
+    if (nodes.empty()) return false;
     
-    int idx = -1;
-    for (size_t i = 0; i < nodes.size(); ++i) {
-        if (nodes[i] == activeNode) {
-            idx = i;
-            break;
-        }
-    }
-    
-    if (idx != -1) {
-        idx = (idx + 1) % nodes.size();
-        activeNode = nodes[idx];
+    if (index >= 0 && index < (int)nodes.size()) {
+        activeNode = nodes[index];
         try { fs::current_path(activeNode->pane->cwd); } catch(...) {}
+        return true;
     }
+    return false;
 }
 
 void Multiplexer::logToActive(const std::string& text) {
@@ -386,14 +379,14 @@ void Multiplexer::flattenPanes(LayoutNode* node, std::vector<Pane*>& out) {
     }
 }
 
-void Multiplexer::detachActivePane() {
+bool Multiplexer::detachActivePane() {
     debugLog("detachActivePane: Called");
-    if (!activeNode) { debugLog("detach: No activeNode"); return; }
+    if (!activeNode) { debugLog("detach: No activeNode"); return false; }
     
     if (!activeNode->parent) {
-        if (activeNode->pane) activeNode->pane->write("Cannot detach the last pane.\n");
+        // if (activeNode->pane) activeNode->pane->write("Cannot detach the last pane.\n");
         debugLog("detach: Cannot detach root");
-        return;
+        return false;
     }
 
     auto parent = activeNode->parent;
@@ -403,6 +396,7 @@ void Multiplexer::detachActivePane() {
     
     // Save pane to background
     if (activeNode->pane) {
+        activeNode->pane->detachTime = std::chrono::steady_clock::now();
         backgroundPanes.push_back(std::move(activeNode->pane));
     }
     
@@ -440,21 +434,18 @@ void Multiplexer::detachActivePane() {
         activeNode->pane->write("Pane detached. Background count: " + std::to_string(backgroundPanes.size()) + "\n");
     }
     debugLog("detach: Done");
+    return true;
 }
 
-void Multiplexer::retachPane(int index) {
+bool Multiplexer::retachPane(int index) {
     debugLog("retachPane: Called with index " + std::to_string(index));
     if (index < 0 || index >= (int)backgroundPanes.size()) {
-        if (backgroundPanes.empty()) {
-            if (activeNode && activeNode->pane) activeNode->pane->write("No background panes.\n");
-        } else {
-            if (activeNode && activeNode->pane) activeNode->pane->write("Invalid background pane index.\n");
-        }
+        // Logging moved to Shell
         debugLog("retach: Invalid index");
-        return;
+        return false;
     }
     
-    if (!activeNode) return;
+    if (!activeNode) return false;
     
     auto oldPane = std::move(activeNode->pane);
     auto restoredPane = std::move(backgroundPanes[index]);
@@ -490,6 +481,7 @@ void Multiplexer::retachPane(int index) {
     
     calculateLayout(root.get(), {0, 0, cols, rows});
     debugLog("retach: Done");
+    return true;
 }
 
 std::vector<Pane*> Multiplexer::getBackgroundPanes() {

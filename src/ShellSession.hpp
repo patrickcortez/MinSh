@@ -15,7 +15,7 @@ public:
     std::string getCwd() const;
 
     // Execution
-    void execute(const std::string& cmd);
+    bool execute(const std::string& cmd);
     std::string pollOutput();
     bool isBusy();
     

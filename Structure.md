@@ -31,9 +31,10 @@ MinSh@<current_directory>: //Minsh is cyan in color and the directory is in ligh
 Welcome to Minsh! 
 - Type 'help' to view all commands
 
-## Paness:
-Each pane has its own session which the user can switch into using sesh switch
-has their own scroll bar as well, and it uses rectangle partition of divide the panes in an even manner. user can detach the said pane and bring it to the foreground using sesh retach <index>.
+## Panes:
+Each pane has its own independent session. The user can switch focus using `sesh switch <number>`.
+Each pane has its own scroll bar. Screen space is divided using recursive rectangular partitioning.
+Users can detach the active pane to the background and bring it back using `sesh retach <index>`.
 
 ## Error Messages:
 

@@ -34,9 +34,9 @@ public:
     void init();
     
     void addPane(); 
-    void switchPane(int direction); 
-    void detachActivePane();
-    void retachPane(int index);
+    bool switchToPane(int index); 
+    bool detachActivePane();
+    bool retachPane(int index);
     
     Pane& getActivePane();
     std::vector<Pane*> getBackgroundPanes();

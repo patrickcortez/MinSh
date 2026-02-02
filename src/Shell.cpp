@@ -265,8 +265,11 @@ void Shell::executeExternal(const std::string& cmd, const std::vector<std::strin
     }
 
     if (p.session) {
-        p.session->execute(commandLine);
-        p.waitingForProcess = true;
+        if (p.session->execute(commandLine)) {
+            p.waitingForProcess = true;
+        } else {
+             logError("Minsh: " + cmd + ": command not found or failed to execute (" + std::to_string(GetLastError()) + ")");
+        }
     } else {
         logError("Minsh: internal error: no session");
     }
@@ -508,12 +511,17 @@ void Shell::cmdSesh(const std::vector<std::string>& args) {
         }
         try {
             int num = std::stoi(args[2]);
-            multiplexer.switchPane(num);
+            // User inputs 1-based index (e.g. MinSh[1]), convert to 0-based for internal logic
+            if (!multiplexer.switchToPane(num - 1)) {
+                logError("Minsh: sesh switch: pane " + std::to_string(num) + " does not exist");
+            }
         } catch (...) {
             logError("Minsh: sesh switch: invalid number");
         }
     } else if (subcmd == "detach") {
-        multiplexer.detachActivePane();
+        if (!multiplexer.detachActivePane()) {
+            logError("Minsh: sesh detach: cannot detach the last pane");
+        }
     } else if (subcmd == "retach") {
         if (args.size() < 3) {
             logError("Minsh: sesh retach: missing index");
@@ -521,29 +529,84 @@ void Shell::cmdSesh(const std::vector<std::string>& args) {
         }
         try {
             int num = std::stoi(args[2]);
-            multiplexer.retachPane(num);
+            if (!multiplexer.retachPane(num)) {
+                 logError("Minsh: sesh retach: invalid index " + std::to_string(num));
+            }
         } catch (...) {
             logError("Minsh: sesh retach: invalid number");
         }
+    } else if (subcmd == "remove") {
+         if (args.size() < 3) {
+            logError("Minsh: sesh remove: missing session name");
+            return;
+        }
+        if (SessionManager::removeSession(args[2])) {
+             logLn("Session '" + args[2] + "' removed.");
+        } else {
+             logError("Minsh: sesh remove: session not found");
+        }
+    } else if (subcmd == "update") {
+        // Update loaded session? No, typically "update <name>" overwrites it.
+        // Assuming current pane has a session loaded. But session info isn't stored in pane struct strongly.
+        // Let's implement as "update <name>".
+         if (args.size() < 3) {
+            logError("Minsh: sesh update: missing session name");
+            return;
+        }
+        std::string name = args[2];
+        std::ostringstream oss;
+        Pane& p = multiplexer.getActivePane();
+        for (const auto& line : p.grid->lines) {
+             std::string lineStr;
+             for (const auto& c : line->cells) if (c.data != 0) lineStr += (char)c.data;
+             while (!lineStr.empty() && lineStr.back() == ' ') lineStr.pop_back();
+             if(!lineStr.empty()) oss << lineStr << "\n";
+        }
+        // Save overwrites.
+        if (SessionManager::saveSession(name, oss.str(), p.cwd)) {
+            logLn("Session '" + name + "' updated.");
+        } else {
+            logError("Minsh: sesh update: failed to update session");
+        }
     } else if (subcmd == "list") {
-        // List on disk
-        std::vector<std::string> sessions = SessionManager::listSessions();
-        if (!sessions.empty()) {
-            logLn("Saved Sessions:");
-            for (const auto& s : sessions) {
-                logLn("  " + s);
+        bool onlyBackground = false;
+        if (args.size() > 2 && args[2] == "-b") {
+            onlyBackground = true;
+        }
+
+        // List on disk (only if not -b)
+        if (!onlyBackground) {
+            std::vector<std::string> sessions = SessionManager::listSessions();
+            if (!sessions.empty()) {
+                logLn("Saved Sessions:");
+                for (const auto& s : sessions) {
+                    logLn("  " + s);
+                }
             }
         }
+        
         // List background
         auto bg = multiplexer.getBackgroundPanes();
         if (!bg.empty()) {
-            logLn("Background Panes:");
+            if (onlyBackground) logLn("Background Panes (Detached):");
+            else logLn("Background Panes:");
+            
+            auto now = std::chrono::steady_clock::now();
+            
             for (size_t i = 0; i < bg.size(); ++i) {
-                logLn("  [" + std::to_string(i) + "] CWD: " + bg[i]->cwd);
+                std::string durStr = "";
+                if (bg[i]->detachTime.time_since_epoch().count() > 0) {
+                     auto dur = std::chrono::duration_cast<std::chrono::seconds>(now - bg[i]->detachTime).count();
+                     durStr = " (Detached: " + std::to_string(dur) + "s ago)";
+                }
+                logLn("  [" + std::to_string(i) + "] CWD: " + bg[i]->cwd + durStr);
             }
         }
-        if (sessions.empty() && bg.empty()) {
+        
+        if (!onlyBackground && SessionManager::listSessions().empty() && bg.empty()) {
             logLn("No sessions found.");
+        } else if (onlyBackground && bg.empty()) {
+            logLn("No background sessions found.");
         }
     } else {
         logError("Minsh: sesh: unknown subcommand '" + subcmd + "'");

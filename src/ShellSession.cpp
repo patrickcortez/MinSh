@@ -69,8 +69,8 @@ void ShellSession::cleanupProcess() {
     }
 }
 
-void ShellSession::execute(const std::string& cmd) {
-    if (isBusy()) return; // Already running logic? Or queue? For now, block/ignore.
+bool ShellSession::execute(const std::string& cmd) {
+    if (isBusy()) return false; // Already running logic? Or queue? For now, block/ignore.
 
     createPipes();
 
@@ -111,10 +111,11 @@ void ShellSession::execute(const std::string& cmd) {
     if (bSuccess) {
         hProcess = piProcInfo.hProcess;
         hThread = piProcInfo.hThread;
+        return true;
     } else {
         // Failed
         closePipes();
-        // Ideally return error string or status
+        return false;
     }
 }
 

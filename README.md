@@ -4,7 +4,8 @@ A custom lightweight Command Dispatcher made in C++, for the educational purpose
 ## Features
 - MultiPlexing and MultiPaning
 - Independent Sessions per Pane
-- Session Management
+- Session Management and Pane management
+- Background Sessions
 - Simple Core Utility Commands
 
 ## Commands

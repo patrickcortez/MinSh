@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <windows.h>
 #include "ShellSession.hpp"
+#include <chrono>
 
 struct GridCell {
     uint32_t data;
@@ -52,6 +53,7 @@ public:
     std::string cwd;
     std::string currentInput; // Added for line editing
     bool waitingForProcess = false; // Added for prompt management
+    std::chrono::steady_clock::time_point detachTime; // Track when detached
     
     void write(const std::string& text);
     void resize(int w, int h);
