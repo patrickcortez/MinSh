@@ -340,7 +340,7 @@ void Multiplexer::handleMouse(int x, int y, int button) {
     }
     
     if (node && node->pane) {
-         activeNode = node; // Click to focus
+         // activeNode = node; // Click to focus DISABLED per user request
          
          Rect r = node->cachedRect;
          int sbX = r.x + r.w - 1;
@@ -496,4 +496,11 @@ std::vector<Pane*> Multiplexer::getBackgroundPanes() {
     std::vector<Pane*> res;
     for(auto& p : backgroundPanes) res.push_back(p.get());
     return res;
+}
+
+std::vector<Pane*> Multiplexer::getAllPanes() {
+    std::vector<Pane*> panes;
+    flattenPanes(root.get(), panes);
+    for(auto& p : backgroundPanes) panes.push_back(p.get());
+    return panes;
 }

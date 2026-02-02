@@ -40,6 +40,7 @@ public:
     
     Pane& getActivePane();
     std::vector<Pane*> getBackgroundPanes();
+    std::vector<Pane*> getAllPanes(); // Added
     int getActivePaneIndex() const; 
 
     void render();

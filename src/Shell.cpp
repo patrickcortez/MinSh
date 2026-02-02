@@ -29,11 +29,14 @@ Shell::Shell(const std::string& exePath) : isRunning(true) {
         try {
             fs::current_path(home);
             multiplexer.getActivePane().cwd = home;
+            multiplexer.getActivePane().session->setCwd(home);
         } catch (const fs::filesystem_error&) {
             // Fallback
         }
     } else {
-        multiplexer.getActivePane().cwd = fs::current_path().string();
+        std::string current = fs::current_path().string();
+        multiplexer.getActivePane().cwd = current;
+        multiplexer.getActivePane().session->setCwd(current);
     }
 }
 
@@ -59,53 +62,116 @@ void Shell::run() {
         std::cerr << "Error setting console mode" << std::endl;
     }
     
-    std::string inputBuffer;
-    
     while (isRunning) {
         try {
-            try {
-                fs::current_path(multiplexer.getActivePane().cwd);
-            } catch (...) {}
-
-            multiplexer.render();
-            
-            INPUT_RECORD ir[128];
-            DWORD nRead;
-            if (ReadConsoleInput(hIn, ir, 128, &nRead) && nRead > 0) {
-                for (DWORD i = 0; i < nRead; ++i) {
-                    if (ir[i].EventType == KEY_EVENT && ir[i].Event.KeyEvent.bKeyDown) {
-                        KEY_EVENT_RECORD& ker = ir[i].Event.KeyEvent;
-                        char c = ker.uChar.AsciiChar;
-                        
-                        if (c == '\r') { 
-                            multiplexer.logToActive("\n");
-                            parseAndExecute(inputBuffer);
-                            inputBuffer.clear();
-                            multiplexer.logToActive("\n");
-                            
-                            Pane& p = multiplexer.getActivePane();
-                            std::string folder = fs::path(p.cwd).filename().string();
-                            if (folder.empty()) folder = p.cwd;
-                            std::string prompt = "\033[36mMinSh[" + std::to_string(multiplexer.getActivePaneIndex() + 1) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
-                            p.write(prompt);
-                        } 
-                        else if (c == '\b') { 
-                            if (!inputBuffer.empty()) {
-                                inputBuffer.pop_back();
-                                multiplexer.getActivePane().backspace();
-                            }
-                        }
-                        else if (c >= 32) { 
-                            inputBuffer += c;
-                            multiplexer.getActivePane().write(std::string(1, c));
-                        }
-                    } else if (ir[i].EventType == MOUSE_EVENT) {
-                         MOUSE_EVENT_RECORD& mer = ir[i].Event.MouseEvent;
-                         if (mer.dwButtonState == FROM_LEFT_1ST_BUTTON_PRESSED) {
-                             multiplexer.handleMouse(mer.dwMousePosition.X, mer.dwMousePosition.Y, 1);
-                         }
+            // 1. Poll Sessions
+            auto panes = multiplexer.getAllPanes();
+            for (auto* pane : panes) {
+                if (pane->session) {
+                    bool busy = pane->session->isBusy();
+                    std::string out = pane->session->pollOutput();
+                    if (!out.empty()) pane->write(out);
+                    
+                    if (pane->waitingForProcess && !busy) {
+                         pane->waitingForProcess = false;
+                         
+                         // Print Prompt
+                         std::string folder = fs::path(pane->session->getCwd()).filename().string();
+                         if (folder.empty()) folder = pane->session->getCwd();
+                         
+                         // Find index - slow but necessary for prompt accuracy
+                         // Since we are iterating panes, we don't know the "index" in terms of "ActivePaneIndex" logic unless we search.
+                         // But usually index is only for Active pane? No, MinSh[N].
+                         // Let's just use "MinSh" for background completion or try to find it.
+                         // For simplicity, reusing ActivePaneIndex only works if we are painting active pane.
+                         // But here we are painting 'pane'.
+                         // Let's just say "MinSh" or find index. 
+                         // To find index:
+                         int idx = 0;
+                         auto all = multiplexer.getAllPanes();
+                         for(size_t i=0; i<all.size(); ++i) { if(all[i] == pane) { idx = i+1; break; } }
+                         
+                         std::string prompt = "\n\033[36mMinSh[" + std::to_string(idx) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
+                         pane->write(prompt);
                     }
                 }
+            }
+
+            // 2. Sync CWD for OS calls (optional but good for consistency)
+            try {
+                fs::current_path(multiplexer.getActivePane().session->getCwd());
+            } catch (...) {}
+
+            // 3. Render
+            multiplexer.render();
+            
+            // 4. Input Handling
+            DWORD nAvailable = 0;
+            GetNumberOfConsoleInputEvents(hIn, &nAvailable);
+            
+            if (nAvailable > 0) {
+                INPUT_RECORD ir[128];
+                DWORD nRead;
+                if (ReadConsoleInput(hIn, ir, 128, &nRead) && nRead > 0) {
+                    for (DWORD i = 0; i < nRead; ++i) {
+                        if (ir[i].EventType == KEY_EVENT && ir[i].Event.KeyEvent.bKeyDown) {
+                            KEY_EVENT_RECORD& ker = ir[i].Event.KeyEvent;
+                            char c = ker.uChar.AsciiChar;
+                            Pane& p = multiplexer.getActivePane();
+                            
+                            if (p.session && p.session->isBusy()) {
+                                // Forward to child process
+                                if (c != 0) {
+                                    std::string s(1, c);
+                                    p.session->writeInput(s);
+                                    p.write(s); // Echo locally? Usually shells echo.
+                                }
+                            } else {
+                                // Shell Line Editing
+                                if (c == '\r') {
+                                    p.write("\n");
+                                    std::string cmd = p.currentInput;
+                                    p.currentInput.clear();
+                                    
+                                    if (!cmd.empty()) {
+                                        parseAndExecute(cmd);
+                                    } else {
+                                        // Empty command, print prompt
+                                        std::string folder = fs::path(p.session->getCwd()).filename().string();
+                                        if (folder.empty()) folder = p.session->getCwd();
+                                        std::string prompt = "\033[36mMinSh[" + std::to_string(multiplexer.getActivePaneIndex() + 1) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
+                                        p.write(prompt);
+                                    }
+                                    
+                                    // If sync command (not waiting), print prompt again
+                                    if (!p.waitingForProcess && !cmd.empty()) {
+                                         std::string folder = fs::path(p.session->getCwd()).filename().string();
+                                         if (folder.empty()) folder = p.session->getCwd();
+                                         std::string prompt = "\n\033[36mMinSh[" + std::to_string(multiplexer.getActivePaneIndex() + 1) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
+                                         p.write(prompt);
+                                    }
+                                } 
+                                else if (c == '\b') { 
+                                    if (!p.currentInput.empty()) {
+                                        p.currentInput.pop_back();
+                                        p.backspace();
+                                    }
+                                }
+                                else if (c >= 32) { 
+                                    p.currentInput += c;
+                                    p.write(std::string(1, c));
+                                }
+                            }
+                        } else if (ir[i].EventType == MOUSE_EVENT) {
+                             MOUSE_EVENT_RECORD& mer = ir[i].Event.MouseEvent;
+                             if (mer.dwButtonState == FROM_LEFT_1ST_BUTTON_PRESSED) {
+                                 multiplexer.handleMouse(mer.dwMousePosition.X, mer.dwMousePosition.Y, 1);
+                             }
+                        }
+                    }
+                }
+            } else {
+                Sleep(10); // Prevent CPU burn
             }
         } catch (const std::exception& e) {
             debugLog("CRASH AVOIDED: " + std::string(e.what()));
@@ -168,6 +234,8 @@ void Shell::parseAndExecute(const std::string& input) {
 }
 
 void Shell::executeExternal(const std::string& cmd, const std::vector<std::string>& args) {
+    Pane& p = multiplexer.getActivePane();
+    
     std::string execCmd = cmd;
     bool foundInCmds = false;
     
@@ -176,9 +244,9 @@ void Shell::executeExternal(const std::string& cmd, const std::vector<std::strin
     std::vector<std::string> extensions = {"", ".exe", ".bat", ".cmd", ".com"};
     
     for (const auto& ext : extensions) {
-        fs::path p = cmdsDir / (cmd + ext);
-        if (fs::exists(p)) {
-            execCmd = p.string();
+        fs::path pPath = cmdsDir / (cmd + ext);
+        if (fs::exists(pPath)) {
+            execCmd = pPath.string();
             foundInCmds = true;
             break;
         }
@@ -187,8 +255,6 @@ void Shell::executeExternal(const std::string& cmd, const std::vector<std::strin
     // Build command line
     std::string commandLine = "";
     if (foundInCmds) { 
-        // If found in ./cmds/ convert to absolute or relative path that system() understands
-        // system() is fine with relative paths like "cmds\foo.exe"
         commandLine = execCmd;
     } else {
         commandLine = cmd; 
@@ -198,51 +264,14 @@ void Shell::executeExternal(const std::string& cmd, const std::vector<std::strin
         commandLine += " \"" + args[i] + "\"";
     }
 
-    // Restore console mode for the child process
-    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
-    DWORD prevMode = 0;
-    GetConsoleMode(hIn, &prevMode);
-    SetConsoleMode(hIn, ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
-
-    STARTUPINFO si;
-    PROCESS_INFORMATION pi;
-
-    ZeroMemory(&si, sizeof(si));
-    si.cb = sizeof(si);
-    ZeroMemory(&pi, sizeof(pi));
-
-    // CreateProcess requires a mutable string
-    if (!CreateProcess(NULL,   // No module name (use command line)
-        &commandLine[0],        // Command line
-        NULL,           // Process handle not inheritable
-        NULL,           // Thread handle not inheritable
-        FALSE,          // Set handle inheritance to FALSE
-        0,              // No creation flags
-        NULL,           // Use parent's environment block
-        NULL,           // Use parent's starting directory 
-        &si,            // Pointer to STARTUPINFO structure
-        &pi)           // Pointer to PROCESS_INFORMATION structure
-        ) 
-    {
-        if (!foundInCmds) {
-            logError("Minsh: " + cmd + ": command not found or failed to execute");
-        } else {
-             logError("Minsh: " + execCmd + ": execution failed (" + std::to_string(GetLastError()) + ")");
-        }
+    if (p.session) {
+        p.session->execute(commandLine);
+        p.waitingForProcess = true;
     } else {
-        // Wait until child process exits.
-        WaitForSingleObject(pi.hProcess, INFINITE);
-
-        // Close process and thread handles. 
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
+        logError("Minsh: internal error: no session");
     }
-
-    // Restore raw mode
-    SetConsoleMode(hIn, prevMode);
     
-    // Ideally we force repaint after external command returns
-    multiplexer.render();
+    // Force poll immediately? No, loop handles it.
 }
 
 void Shell::cmdExit() {
@@ -284,7 +313,7 @@ void Shell::cmdSay(const std::vector<std::string>& args) {
 
 void Shell::cmdCwd() {
     try {
-        logLn(fs::current_path().string());
+        logLn(multiplexer.getActivePane().session->getCwd());
     } catch (const fs::filesystem_error& e) {
         logError(std::string("Minsh: cwd: ") + e.what());
     }
@@ -296,9 +325,25 @@ void Shell::cmdGoto(const std::vector<std::string>& args) {
         return;
     }
     try {
-        fs::current_path(args[1]);
+        Pane& p = multiplexer.getActivePane();
+        fs::path target(args[1]);
+        if (target.is_relative()) {
+            target = fs::path(p.session->getCwd()) / target;
+        }
+        
+        target = fs::canonical(target); // Resolve .. etc
+        
+        if (fs::exists(target) && fs::is_directory(target)) {
+             p.session->setCwd(target.string());
+             p.cwd = target.string();
+             // fs::current_path(target); // Loop will sync this
+        } else {
+             logError("Minsh: " + args[1] + ": directory not found");
+        }
     } catch (const fs::filesystem_error& e) {
-        logError("Minsh: " + args[1] + ": directory not found");
+        logError("Minsh: " + args[1] + ": directory not found"); // canonical throws if not found
+    } catch (...) {
+        logError("Minsh: " + args[1] + ": error changing directory");
     }
 }
 

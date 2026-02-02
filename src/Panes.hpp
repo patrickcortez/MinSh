@@ -6,6 +6,7 @@
 #include <memory>
 #include <cstdint>
 #include <windows.h>
+#include "ShellSession.hpp"
 
 struct GridCell {
     uint32_t data;
@@ -45,9 +46,12 @@ public:
     ~Pane();
     
     std::unique_ptr<Grid> grid;
+    std::unique_ptr<ShellSession> session;
     int cx, cy;
     int scrollOffset; 
     std::string cwd;
+    std::string currentInput; // Added for line editing
+    bool waitingForProcess = false; // Added for prompt management
     
     void write(const std::string& text);
     void resize(int w, int h);

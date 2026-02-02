@@ -1,8 +1,9 @@
 # MinSh
-A custom lightweight Command Dispatcher made in C++, for the educational purpose of learning session management and multiplexing.
+A custom lightweight Command Dispatcher made in C++, for the educational purpose of learning session management and multiplexing/MultiPaning.
 
 ## Features
-- MultiPlexing
+- MultiPlexing and MultiPaning
+- Independent Sessions per Pane
 - Session Management
 - Simple Core Utility Commands
 
@@ -19,8 +20,8 @@ A custom lightweight Command Dispatcher made in C++, for the educational purpose
     - update - updates loaded session
     - remove <name> - removes a session
     - list - lists all sessions
-    - add - splits screen with new session
-    - switch <number> - switches focus to session N
+    - add - splits screen with new sessions/Adds a Pane in the screen.
+    - switch <number> - switches focus to session <N>
     - detach - moves active session to background
     - retach <index> - brings background session to foreground
 - exit - exits the shell

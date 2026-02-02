@@ -31,6 +31,10 @@ MinSh@<current_directory>: //Minsh is cyan in color and the directory is in ligh
 Welcome to Minsh! 
 - Type 'help' to view all commands
 
+## Paness:
+Each pane has its own session which the user can switch into using sesh switch
+has their own scroll bar as well, and it uses rectangle partition of divide the panes in an even manner. user can detach the said pane and bring it to the foreground using sesh retach <index>.
+
 ## Error Messages:
 
 - Minsh: <command>: command not found

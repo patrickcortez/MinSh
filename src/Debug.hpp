@@ -3,8 +3,8 @@
 #include <fstream>
 #include <string>
 
-inline void debugLog(const std::string& msg) {
-    std::ofstream ofs("debug.log", std::ios::app);
+inline void debugLog(const std::string& msg) { //debug any errors
+    std::ofstream ofs("debug.log", std::ios::app); //store log into a file
     ofs << msg << std::endl;
 }
 #endif

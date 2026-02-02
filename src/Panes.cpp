@@ -53,12 +53,15 @@ void Grid::scroll_up() {
 
 Pane::Pane(int w, int h) : cx(0), cy(0), scrollOffset(0), currentAttr(0x07), state(NORMAL) {
     grid = std::make_unique<Grid>(w, h);
+    session = std::make_unique<ShellSession>();
     
     // Get HOME
     const char* home = std::getenv("USERPROFILE");
     if (!home) home = std::getenv("HOME");
     if (home) cwd = home;
     else cwd = ".";
+    
+    session->setCwd(cwd);
 }
 
 Pane::~Pane() {}
