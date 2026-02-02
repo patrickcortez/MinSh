@@ -1,4 +1,4 @@
-// Compile: cmake ...
+// Compile: Use CMake (mkdir build && cd build && cmake .. && cmake --build .)
 // Run: bin/minsh
 
 #include "Shell.h"
@@ -17,6 +17,10 @@ Shell::Shell(const std::string& exePath) : isRunning(true) {
     SessionManager::init(exePath);
     SessionManager::ensureSessionDirectory();
     multiplexer.init();
+
+    if (!fs::exists("cmds")) {
+        fs::create_directory("cmds");
+    }
 
     // Start at home directory for the initial pane
     const char* home = getenv("USERPROFILE"); // Windows
@@ -116,15 +120,7 @@ void Shell::run() {
     SetConsoleMode(hIn, prevMode);
 }
 
-std::vector<std::string> Shell::splitInput(const std::string& input) {
-    std::vector<std::string> tokens;
-    std::string token;
-    std::istringstream tokenStream(input);
-    while (tokenStream >> token) {
-        tokens.push_back(token);
-    }
-    return tokens;
-}
+
 
 // Helper for red errors
 void Shell::logError(const std::string& text) {
@@ -133,8 +129,13 @@ void Shell::logError(const std::string& text) {
 
 void Shell::parseAndExecute(const std::string& input) {
     try {
-        std::vector<std::string> args = splitInput(input);
-        if (args.empty()) return;
+        auto tokens = Lexer::tokenize(input);
+        if (tokens.empty()) return;
+
+        std::vector<std::string> args;
+        for (const auto& token : tokens) {
+            args.push_back(token.value);
+        }
 
         std::string command = args[0];
 
@@ -157,13 +158,91 @@ void Shell::parseAndExecute(const std::string& input) {
         } else if (command == "sesh") {
             cmdSesh(args);
         } else {
-            logError("Minsh: " + command + ": command not found");
+            executeExternal(command, args);
         }
     } catch (const std::exception& e) {
         logError("Minsh: internal error: " + std::string(e.what()));
     } catch (...) {
         logError("Minsh: unknown internal error");
     }
+}
+
+void Shell::executeExternal(const std::string& cmd, const std::vector<std::string>& args) {
+    std::string execCmd = cmd;
+    bool foundInCmds = false;
+    
+    // Check cmds folder
+    fs::path cmdsDir("cmds");
+    std::vector<std::string> extensions = {"", ".exe", ".bat", ".cmd", ".com"};
+    
+    for (const auto& ext : extensions) {
+        fs::path p = cmdsDir / (cmd + ext);
+        if (fs::exists(p)) {
+            execCmd = p.string();
+            foundInCmds = true;
+            break;
+        }
+    }
+
+    // Build command line
+    std::string commandLine = "";
+    if (foundInCmds) { 
+        // If found in ./cmds/ convert to absolute or relative path that system() understands
+        // system() is fine with relative paths like "cmds\foo.exe"
+        commandLine = execCmd;
+    } else {
+        commandLine = cmd; 
+    }
+
+    for (size_t i = 1; i < args.size(); ++i) {
+        commandLine += " \"" + args[i] + "\"";
+    }
+
+    // Restore console mode for the child process
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD prevMode = 0;
+    GetConsoleMode(hIn, &prevMode);
+    SetConsoleMode(hIn, ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
+
+    STARTUPINFO si;
+    PROCESS_INFORMATION pi;
+
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+
+    // CreateProcess requires a mutable string
+    if (!CreateProcess(NULL,   // No module name (use command line)
+        &commandLine[0],        // Command line
+        NULL,           // Process handle not inheritable
+        NULL,           // Thread handle not inheritable
+        FALSE,          // Set handle inheritance to FALSE
+        0,              // No creation flags
+        NULL,           // Use parent's environment block
+        NULL,           // Use parent's starting directory 
+        &si,            // Pointer to STARTUPINFO structure
+        &pi)           // Pointer to PROCESS_INFORMATION structure
+        ) 
+    {
+        if (!foundInCmds) {
+            logError("Minsh: " + cmd + ": command not found or failed to execute");
+        } else {
+             logError("Minsh: " + execCmd + ": execution failed (" + std::to_string(GetLastError()) + ")");
+        }
+    } else {
+        // Wait until child process exits.
+        WaitForSingleObject(pi.hProcess, INFINITE);
+
+        // Close process and thread handles. 
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+
+    // Restore raw mode
+    SetConsoleMode(hIn, prevMode);
+    
+    // Ideally we force repaint after external command returns
+    multiplexer.render();
 }
 
 void Shell::cmdExit() {

@@ -1,4 +1,4 @@
-// Compile: g++ -Wall -std=c++17 src/main.cpp src/Shell.cpp src/Sessions.cpp -o bin/minsh
+// Compile: Use CMake (mkdir build && cd build && cmake .. && cmake --build .)
 // Run: bin/minsh
 // Execute: bin/minsh
 

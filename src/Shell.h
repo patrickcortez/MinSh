@@ -9,6 +9,7 @@
 #include <vector>
 #include <sstream>
 #include "Multiplex.hpp"
+#include "Lexer.hpp"
 
 class Shell {
 public:
@@ -20,7 +21,10 @@ private:
 
     void printPrompt();
     void parseAndExecute(const std::string& input);
-    std::vector<std::string> splitInput(const std::string& input);
+    // std::vector<std::string> splitInput(const std::string& input); // Replaced by Lexer
+
+    // Commands
+    void executeExternal(const std::string& cmd, const std::vector<std::string>& args);
 
     // Commands
     void cmdHelp();
