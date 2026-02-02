@@ -36,6 +36,7 @@ private:
     // Logging helper
     void log(const std::string& text);
     void logLn(const std::string& text = "");
+    void logError(const std::string& text);
     
     Multiplexer multiplexer;
 };

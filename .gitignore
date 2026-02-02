@@ -1,3 +1,2 @@
-bin/*.exe
-bin/sessions
+bin
 build

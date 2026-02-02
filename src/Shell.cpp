@@ -33,46 +33,87 @@ Shell::Shell(const std::string& exePath) : isRunning(true) {
     }
 }
 
+void Shell::logLn(const std::string& text) {
+    multiplexer.logToActive(text + "\n");
+}
+
 void Shell::log(const std::string& text) {
     multiplexer.logToActive(text);
 }
 
-void Shell::logLn(const std::string& text) {
-    multiplexer.logToActive(text);
-}
+#include "Debug.hpp"
+
+// ... imports ...
 
 void Shell::run() {
-    // Initial welcome
-    logLn("Welcome to Minsh!");
-    logLn("- Type 'help' to view all commands");
+    multiplexer.init(); 
 
-    std::string input;
-    while (isRunning) {
-        // Sync process CWD with active pane before prompt/execution
-        try {
-            fs::current_path(multiplexer.getActivePane().cwd);
-        } catch (...) {}
-
-        multiplexer.render();
-
-        if (!std::getline(std::cin, input)) {
-            break;
-        }
-
-        // Echo input to history so it stays visible
-        multiplexer.logToActive("> " + input);
-
-        if (input.empty()) {
-            continue;
-        }
-
-        parseAndExecute(input);
-        
-        // Update CWD in pane after execution (in case of cd/goto)
-        try {
-            multiplexer.getActivePane().cwd = fs::current_path().string();
-        } catch (...) {}
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD prevMode;
+    GetConsoleMode(hIn, &prevMode);
+    if (!SetConsoleMode(hIn, ENABLE_EXTENDED_FLAGS | ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT)) {
+        std::cerr << "Error setting console mode" << std::endl;
     }
+    
+    std::string inputBuffer;
+    
+    while (isRunning) {
+        try {
+            try {
+                fs::current_path(multiplexer.getActivePane().cwd);
+            } catch (...) {}
+
+            multiplexer.render();
+            
+            INPUT_RECORD ir[128];
+            DWORD nRead;
+            if (ReadConsoleInput(hIn, ir, 128, &nRead) && nRead > 0) {
+                for (DWORD i = 0; i < nRead; ++i) {
+                    if (ir[i].EventType == KEY_EVENT && ir[i].Event.KeyEvent.bKeyDown) {
+                        KEY_EVENT_RECORD& ker = ir[i].Event.KeyEvent;
+                        char c = ker.uChar.AsciiChar;
+                        
+                        if (c == '\r') { 
+                            multiplexer.logToActive("\n");
+                            parseAndExecute(inputBuffer);
+                            inputBuffer.clear();
+                            multiplexer.logToActive("\n");
+                            
+                            Pane& p = multiplexer.getActivePane();
+                            std::string folder = fs::path(p.cwd).filename().string();
+                            if (folder.empty()) folder = p.cwd;
+                            std::string prompt = "\033[36mMinSh[" + std::to_string(multiplexer.getActivePaneIndex() + 1) + "]\033[0m@\033[32m" + folder + "\033[0m: ";
+                            p.write(prompt);
+                        } 
+                        else if (c == '\b') { 
+                            if (!inputBuffer.empty()) {
+                                inputBuffer.pop_back();
+                                multiplexer.getActivePane().backspace();
+                            }
+                        }
+                        else if (c >= 32) { 
+                            inputBuffer += c;
+                            multiplexer.getActivePane().write(std::string(1, c));
+                        }
+                    } else if (ir[i].EventType == MOUSE_EVENT) {
+                         MOUSE_EVENT_RECORD& mer = ir[i].Event.MouseEvent;
+                         if (mer.dwButtonState == FROM_LEFT_1ST_BUTTON_PRESSED) {
+                             multiplexer.handleMouse(mer.dwMousePosition.X, mer.dwMousePosition.Y, 1);
+                         }
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            debugLog("CRASH AVOIDED: " + std::string(e.what()));
+            logError("Internal Crash Avoided: " + std::string(e.what()));
+        } catch (...) {
+            debugLog("CRASH AVOIDED: Unknown Error");
+            logError("Internal Crash Avoided: Unknown Error");
+        }
+    }
+    
+    multiplexer.exitGuiMode();
+    SetConsoleMode(hIn, prevMode);
 }
 
 std::vector<std::string> Shell::splitInput(const std::string& input) {
@@ -85,32 +126,43 @@ std::vector<std::string> Shell::splitInput(const std::string& input) {
     return tokens;
 }
 
+// Helper for red errors
+void Shell::logError(const std::string& text) {
+    multiplexer.logToActive("\033[31m" + text + "\033[0m\n");
+}
+
 void Shell::parseAndExecute(const std::string& input) {
-    std::vector<std::string> args = splitInput(input);
-    if (args.empty()) return;
+    try {
+        std::vector<std::string> args = splitInput(input);
+        if (args.empty()) return;
 
-    std::string command = args[0];
+        std::string command = args[0];
 
-    if (command == "exit") {
-        cmdExit();
-    } else if (command == "help") {
-        cmdHelp();
-    } else if (command == "say") {
-        cmdSay(args);
-    } else if (command == "cwd") {
-        cmdCwd();
-    } else if (command == "goto") {
-        cmdGoto(args);
-    } else if (command == "make") {
-        cmdMake(args);
-    } else if (command == "remove") {
-        cmdRemove(args);
-    } else if (command == "list") {
-        cmdList(args);
-    } else if (command == "sesh") {
-        cmdSesh(args);
-    } else {
-        logLn("Minsh: " + command + ": command not found");
+        if (command == "exit") {
+            cmdExit();
+        } else if (command == "help") {
+            cmdHelp();
+        } else if (command == "say") {
+            cmdSay(args);
+        } else if (command == "cwd") {
+            cmdCwd();
+        } else if (command == "goto") {
+            cmdGoto(args);
+        } else if (command == "make") {
+            cmdMake(args);
+        } else if (command == "remove") {
+            cmdRemove(args);
+        } else if (command == "list") {
+            cmdList(args);
+        } else if (command == "sesh") {
+            cmdSesh(args);
+        } else {
+            logError("Minsh: " + command + ": command not found");
+        }
+    } catch (const std::exception& e) {
+        logError("Minsh: internal error: " + std::string(e.what()));
+    } catch (...) {
+        logError("Minsh: unknown internal error");
     }
 }
 
@@ -155,19 +207,19 @@ void Shell::cmdCwd() {
     try {
         logLn(fs::current_path().string());
     } catch (const fs::filesystem_error& e) {
-        logLn(std::string("Minsh: cwd: ") + e.what());
+        logError(std::string("Minsh: cwd: ") + e.what());
     }
 }
 
 void Shell::cmdGoto(const std::vector<std::string>& args) {
     if (args.size() < 2) {
-        logLn("Minsh: goto: invalid arguments");
+        logError("Minsh: goto: invalid arguments");
         return;
     }
     try {
         fs::current_path(args[1]);
     } catch (const fs::filesystem_error& e) {
-        logLn("Minsh: " + args[1] + ": directory not found");
+        logError("Minsh: " + args[1] + ": directory not found");
     }
 }
 
@@ -184,26 +236,26 @@ void Shell::cmdMake(const std::vector<std::string>& args) {
         if (flag == "-f") {
             std::ofstream outfile(name);
             if (!outfile) {
-                 logLn("Minsh: " + name + ": permission denied");
+                 logError("Minsh: " + name + ": permission denied");
             }
             outfile.close();
         } else if (flag == "-d") {
             if (!fs::create_directory(name)) {
                 if (!fs::exists(name)) {
-                     logLn("Minsh: " + name + ": permission denied");
+                     logError("Minsh: " + name + ": permission denied");
                 }
             }
         } else {
-             logLn("Minsh: make: invalid arguments");
+             logError("Minsh: make: invalid arguments");
         }
     } catch (const std::exception& e) {
-        logLn(std::string("Minsh: make: ") + e.what());
+        logError(std::string("Minsh: make: ") + e.what());
     }
 }
 
 void Shell::cmdRemove(const std::vector<std::string>& args) {
     if (args.size() < 3) {
-        logLn("Minsh: remove: invalid arguments");
+        logError("Minsh: remove: invalid arguments");
         return;
     }
 
@@ -212,28 +264,28 @@ void Shell::cmdRemove(const std::vector<std::string>& args) {
 
     try {
         if (!fs::exists(name)) {
-            if (flag == "-d") logLn("Minsh: " + name + ": directory not found");
-            else logLn("Minsh: " + name + ": file not found");
+            if (flag == "-d") logError("Minsh: " + name + ": directory not found");
+            else logError("Minsh: " + name + ": file not found");
             return;
         }
 
         if (flag == "-f") {
             if (fs::is_directory(name)) {
-                 logLn("Minsh: " + name + ": is a directory");
+                 logError("Minsh: " + name + ": is a directory");
             } else {
                 fs::remove(name);
             }
         } else if (flag == "-d") {
              if (!fs::is_directory(name)) {
-                  logLn("Minsh: " + name + ": is not a directory");
+                  logError("Minsh: " + name + ": is not a directory");
              } else {
                  fs::remove_all(name);
              }
         } else {
-             logLn("Minsh: remove: invalid arguments");
+             logError("Minsh: remove: invalid arguments");
         }
     } catch (const fs::filesystem_error& e) {
-        logLn("Minsh: remove: permission denied");
+        logError("Minsh: remove: permission denied");
     }
 }
 
@@ -251,7 +303,7 @@ void Shell::cmdList(const std::vector<std::string>& args) {
 
     try {
         if (!fs::exists(pathString)) {
-             logLn("Minsh: " + pathString + ": directory not found");
+             logError("Minsh: " + pathString + ": directory not found");
              return;
         }
         
@@ -263,13 +315,13 @@ void Shell::cmdList(const std::vector<std::string>& args) {
             logLn(filename);
         }
     } catch (const fs::filesystem_error& e) {
-        logLn("Minsh: list: permission denied");
+        logError("Minsh: list: permission denied");
     }
 }
 
 void Shell::cmdSesh(const std::vector<std::string>& args) {
     if (args.size() < 2) {
-        logLn("Minsh: sesh: invalid arguments. Use save, load, list, add, switch, detach, retach.");
+        logError("Minsh: sesh: invalid arguments. Use save, load, list, add, switch, detach, retach.");
         return;
     }
 
@@ -281,42 +333,43 @@ void Shell::cmdSesh(const std::vector<std::string>& args) {
             return;
         }
         std::string name = args[2];
-        // Join all history lines
-        std::ostringstream oss;
-        for (const auto& line : multiplexer.getActivePane().history) {
-            oss << line << "\n";
+        // Join all history lines - Hard to extract from Grid perfectly without iterating full grid
+    } else if (subcmd == "save") {
+        if (args.size() < 3) {
+            logLn("Minsh: sesh save: missing session name");
+            return;
         }
-        std::string cwd = multiplexer.getActivePane().cwd;
+        std::string name = args[2];
+        std::ostringstream oss;
+        Pane& p = multiplexer.getActivePane();
+        for (const auto& line : p.grid->lines) {
+             std::string lineStr;
+             for (const auto& c : line->cells) if (c.data != 0) lineStr += (char)c.data;
+             while (!lineStr.empty() && lineStr.back() == ' ') lineStr.pop_back();
+             if(!lineStr.empty()) oss << lineStr << "\n";
+        }
+        std::string cwd = p.cwd;
         
         if (SessionManager::saveSession(name, oss.str(), cwd)) {
             logLn("Session '" + name + "' saved.");
         } else {
-            logLn("Minsh: sesh save: failed to save session");
+            logError("Minsh: sesh save: failed to save session");
         }
 
     } else if (subcmd == "load") {
         if (args.size() < 3) {
-            logLn("Minsh: sesh load: missing session name");
+            logError("Minsh: sesh load: missing session name");
             return;
         }
         std::string name = args[2];
         SessionData data = SessionManager::loadSession(name);
         if (data.content.empty() && data.cwd.empty()) {
-            logLn("Minsh: sesh load: session not found or empty");
+            logError("Minsh: sesh load: session not found or empty");
         } else {
-            // Replace current pane history/cwd
             Pane& p = multiplexer.getActivePane();
             p.cwd = data.cwd;
-            p.history.clear();
-            
-            // Split content into lines
-            std::istringstream stream(data.content);
-            std::string line;
-            while (std::getline(stream, line)) {
-                p.history.push_back(line);
-            }
-            
-            // Try to sync CWD immediately
+            p.grid = std::make_unique<Grid>(p.grid->sx, p.grid->sy); // Clear
+            p.write(data.content);
             try {
                 fs::current_path(p.cwd);
             } catch (...) {}
@@ -326,27 +379,27 @@ void Shell::cmdSesh(const std::vector<std::string>& args) {
         multiplexer.addPane();
     } else if (subcmd == "switch") {
         if (args.size() < 3) {
-            logLn("Minsh: sesh switch: missing number");
+            logError("Minsh: sesh switch: missing number");
             return;
         }
         try {
             int num = std::stoi(args[2]);
             multiplexer.switchPane(num);
         } catch (...) {
-            logLn("Minsh: sesh switch: invalid number");
+            logError("Minsh: sesh switch: invalid number");
         }
     } else if (subcmd == "detach") {
         multiplexer.detachActivePane();
     } else if (subcmd == "retach") {
         if (args.size() < 3) {
-            logLn("Minsh: sesh retach: missing index");
+            logError("Minsh: sesh retach: missing index");
             return;
         }
         try {
             int num = std::stoi(args[2]);
             multiplexer.retachPane(num);
         } catch (...) {
-            logLn("Minsh: sesh retach: invalid number");
+            logError("Minsh: sesh retach: invalid number");
         }
     } else if (subcmd == "list") {
         // List on disk
@@ -358,17 +411,17 @@ void Shell::cmdSesh(const std::vector<std::string>& args) {
             }
         }
         // List background
-        auto& bg = multiplexer.getBackgroundPanes();
+        auto bg = multiplexer.getBackgroundPanes();
         if (!bg.empty()) {
             logLn("Background Panes:");
             for (size_t i = 0; i < bg.size(); ++i) {
-                logLn("  [" + std::to_string(i) + "] CWD: " + bg[i].cwd);
+                logLn("  [" + std::to_string(i) + "] CWD: " + bg[i]->cwd);
             }
         }
         if (sessions.empty() && bg.empty()) {
             logLn("No sessions found.");
         }
     } else {
-        logLn("Minsh: sesh: unknown subcommand '" + subcmd + "'");
+        logError("Minsh: sesh: unknown subcommand '" + subcmd + "'");
     }
 }

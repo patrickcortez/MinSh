@@ -1,14 +1,31 @@
 #ifndef MULTIPLEX_HPP
 #define MULTIPLEX_HPP
 
-#include <string>
+#include "Panes.hpp"
 #include <vector>
-#include <iostream>
+#include <memory>
+#include <windows.h>
 
-struct Pane {
-    std::vector<std::string> history;
-    std::string cwd;
-    bool isActive;
+struct Rect {
+    int x, y, w, h;
+};
+
+enum SplitType {
+    SPLIT_NONE,
+    SPLIT_VERTICAL,
+    SPLIT_HORIZONTAL
+};
+
+struct LayoutNode {
+    SplitType type;
+    std::unique_ptr<LayoutNode> childA;
+    std::unique_ptr<LayoutNode> childB;
+    std::unique_ptr<Pane> pane;     
+    float splitRatio;
+    Rect cachedRect;
+    LayoutNode* parent;
+
+    LayoutNode() : type(SPLIT_NONE), splitRatio(0.5f), parent(nullptr) {}
 };
 
 class Multiplexer {
@@ -16,32 +33,40 @@ public:
     Multiplexer();
     void init();
     
-    // Pane Management
-    void addPane(); // Split screen
-    void switchPane(int inputNumber); // 1-based index from user
+    void addPane(); 
+    void switchPane(int direction); 
     void detachActivePane();
     void retachPane(int index);
     
-    // State Access
     Pane& getActivePane();
-    std::vector<Pane>& getVisiblePanes() { return visiblePanes; }
-    std::vector<Pane>& getBackgroundPanes() { return backgroundPanes; }
-    int getActivePaneIndex() const { return activePaneIndex; }
+    std::vector<Pane*> getBackgroundPanes();
+    int getActivePaneIndex() const; 
 
-    // Rendering
     void render();
     void logToActive(const std::string& text);
+    
+    void enterGuiMode();
+    void exitGuiMode();
+    
+    int cols, rows;
+    void updateSize();
+    
+    void handleMouse(int x, int y, int button);
 
 private:
-    std::vector<Pane> visiblePanes;
-    std::vector<Pane> backgroundPanes;
-    int activePaneIndex;
-
-    // Console Helpers
-    void getConsoleSize(int& rows, int& cols);
+    std::unique_ptr<LayoutNode> root;
+    LayoutNode* activeNode;
+    
+    std::vector<std::unique_ptr<Pane>> backgroundPanes;
+    
+    void calculateLayout(LayoutNode* node, Rect r);
+    void renderNode(LayoutNode* node);
     void setCursor(int x, int y);
-    void clearScreen();
-    void enableVirtualTerminal();
+    
+    HANDLE hOut;
+    std::vector<CHAR_INFO> renderBuffer;
+    
+    void flattenPanes(LayoutNode* node, std::vector<Pane*>& out);
 };
 
 #endif // MULTIPLEX_HPP
