@@ -1,5 +1,5 @@
 # MinSh
-A custom lightweight Command Dispatcher made in C++, for the educational purpose of learning session management and multiplexing/MultiPaning.
+A custom lightweight Hybrid Terminal Multiplexer and Workspace Manager made in C++, for the educational purpose of learning session management and multiplexing/MultiPaning.
 
 ## Features
 - MultiPlexing and MultiPaning
